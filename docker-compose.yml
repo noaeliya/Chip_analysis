@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  # שירות ה-Backend (Flask API)
+  backend:
+    build: ./backend  # נתיב לתיקיית ה-Backend שבה נמצא ה-Dockerfile של פייתון
+    ports:
+      - "5000:5000"   # מיפוי פורט 5000 מהמחשב שלך לפורט 5000 בקונטיינר
+    volumes:
+      - ./backend:/app  # מאפשר שמירת קובץ ה-db על המחשב המקומי כדי שהנתונים לא יימחקו סתם
+    restart: always
+
+  # שירות ה-Frontend (Angular Client)
+  frontend:
+    build: ./angular-frontend # נתיב לתיקיית ה-Frontend שבה נמצא ה-Dockerfile של אנגולר
+    ports:
+      - "4200:80"     # ממפה את פורט 4200 בדפדפן שלך לפורט 80 של שרת ה-Nginx בקונטיינר
+    restart: always
+    depends_on:
+      - backend       # מבטיח שה-Backend יעלה וירוץ לפני שאנגולר מנסה לעלות
