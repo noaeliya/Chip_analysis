@@ -3,19 +3,28 @@ import { CommonModule } from '@angular/common';
 import { HttpClientModule, HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
 
+/**
+ * Interface representing a telemetry processing task
+ */
 interface Task {
   status: string;
   progress: number;
   result?: string;
-  analyticsLoaded?: boolean; // סימון האם כבר שלפנו את נתוני השבבים של המשימה הזו
+  analyticsLoaded?: boolean; // Flag to check if chip analytics are fetched
 }
 
+/**
+ * Interface representing the analytical results of a single chip
+ */
 interface ChipResult {
   sensor_id: string;
   avg_temperature: number;
   anomalies_count: number;
 }
 
+/**
+ * Interface representing historical data item for a specific sensor
+ */
 interface SensorHistoryItem {
   task_id: string;
   avg_temperature: number;
@@ -194,15 +203,17 @@ interface SensorHistoryItem {
     .anomaly-badge.has-anomalies { background-color: #ffdad6; color: #ba1a1a; }
     .anomaly-badge.clean { background-color: #e8f5e9; color: #2e7d32; }
   `]
- })
+})
 export class AppComponent implements OnInit {
+  // Global maps to track state across async background processes
   tasks: { [key: string]: Task } = {};
   taskAnalytics: { [key: string]: ChipResult[] } = {};
   
-// הכתובת הציבורית היא כעת ה-DNS של ה-Load Balancer שלך!
-private baseServerUrl = 'http://task-1855629512.eu-west-1.elb.amazonaws.com';
-private apiUrl = `${this.baseServerUrl}/api/tasks`;
+  // AWS Application Load Balancer target URLs
+  private baseServerUrl = 'http://task-1855629512.eu-west-1.elb.amazonaws.com';
+  private apiUrl = `${this.baseServerUrl}/api/tasks`;
 
+  // Search system component states
   searchSensorId: string = '';
   searchedSensorTitle: string = '';
   sensorHistory: SensorHistoryItem[] | null = null;
@@ -210,36 +221,46 @@ private apiUrl = `${this.baseServerUrl}/api/tasks`;
 
   constructor(private http: HttpClient) {}
 
-ngOnInit() {
-  // תיקון: פנייה לשרת בענן ולא ל-127.0.0.1 המקומי
-  this.http.post(`${this.baseServerUrl}/api/reset`, {}).subscribe({
-    next: () => {
-      console.log('--- [DATABASE] מסד הנתונים אופס בהצלחה בעקבות טעינת הדף ---');
-      this.fetchTasksImmediate();
-    },
-    error: (err) => {
-      console.error('שגיאה באיפוס מסד הנתונים, מנסה לטעון נתונים קיימים:', err);
-      this.fetchTasksImmediate();
-    }
-  });
-}
+  /**
+   * Component Lifecycle Hook. Resets database state upon page initialization
+   * to provide a clean dashboard view, then runs initial fetch.
+   */
+  ngOnInit() {
+    this.http.post(`${this.baseServerUrl}/api/reset`, {}).subscribe({
+      next: () => {
+        console.log('--- [DATABASE] Reset complete upon page load ---');
+        this.fetchTasksImmediate();
+      },
+      error: (err) => {
+        console.error('Reset failed, fetching existing state instead:', err);
+        this.fetchTasksImmediate();
+      }
+    });
+  }
 
+  /**
+   * Spawns a new asynchronous background worker task via backend.
+   * Establishes a localized polling interval to track status updates.
+   */
   createNewTask() {
     this.http.post(this.apiUrl, {}).subscribe({
       next: () => {
         this.fetchTasksImmediate();
 
+        // High-frequency polling to track worker multiprocessing states
         const intervalId = setInterval(() => {
           this.http.get<{ [key: string]: Task }>(this.apiUrl).subscribe({
             next: (data) => {
               this.tasks = data;
               
+              // Lazy-load internal granular metrics for completed tasks
               Object.keys(this.tasks).forEach(id => {
                 if (this.tasks[id].status === 'Completed' && !this.taskAnalytics[id]) {
                   this.loadChipAnalyticsForTask(id);
                 }
               });
 
+              // Terminate polling loop when all active jobs reach finality
               const allDone = Object.values(this.tasks).every(task => 
                 task.status === 'Completed' || task.status.startsWith('Failed')
               );
@@ -248,16 +269,19 @@ ngOnInit() {
               }
             },
             error: (err) => {
-              console.error(err);
+              console.error('Polling error:', err);
               clearInterval(intervalId);
             }
           });
         }, 1500);
       },
-      error: (err) => console.error(err)
+      error: (err) => console.error('Failed to trigger background process:', err)
     });
   }
 
+  /**
+   * Immediate singular fetch to sync client interface state with backend data store.
+   */
   fetchTasksImmediate() {
     this.http.get<{ [key: string]: Task }>(this.apiUrl).subscribe({
       next: (data) => {
@@ -268,45 +292,54 @@ ngOnInit() {
           }
         });
       },
-      error: (err) => console.error(err)
+      error: (err) => console.error('Immediate synchronization failed:', err)
     });
   }
 
+  /**
+   * Fetches computed telemetry anomaly data metrics for a specific completed task ID.
+   */
   loadChipAnalyticsForTask(taskId: string) {
     const url = `${this.apiUrl}/${taskId}/analytics`;
     this.http.get<ChipResult[]>(url).subscribe({
       next: (results) => {
         this.taskAnalytics[taskId] = results;
       },
-      error: (err) => console.error(`שגיאה בטעינת שבבים למשימה ${taskId}:`, err)
+      error: (err) => console.error(`Error loading chip results for task ${taskId}:`, err)
     });
   }
 
-searchSensorHistory() {
-  if (!this.searchSensorId.trim()) {
-    this.searchErrorMessage = 'אנא הזיני מזהה שבב לחיפוש.';
-    this.sensorHistory = null;
-    return;
-  }
-  this.searchErrorMessage = '';
-  const sensorUrl = `${this.baseServerUrl}/api/sensors/${this.searchSensorId.trim()}/history`;
-
-  this.http.get<{ sensor_id: string; total_tests_found: number; history: SensorHistoryItem[] }>(sensorUrl).subscribe({
-    next: (response) => {
-      this.sensorHistory = response.history;
-      this.searchedSensorTitle = response.sensor_id;
-      if (this.sensorHistory.length === 0) {
-        this.searchErrorMessage = `לא נמצאו רשומות עבור "${this.searchSensorId}" במסד הנתונים.`;
-      }
-    },
-    error: (err) => {
-      console.error(err);
-      this.searchErrorMessage = 'שגיאה בתקשורת עם השרת או שהשבב לא קיים.';
+  /**
+   * Executes indexed direct lookup search for a singular chip hardware identifier.
+   */
+  searchSensorHistory() {
+    if (!this.searchSensorId.trim()) {
+      this.searchErrorMessage = 'Please enter a valid chip ID to query.';
       this.sensorHistory = null;
+      return;
     }
-  });
-}
+    this.searchErrorMessage = '';
+    const sensorUrl = `${this.baseServerUrl}/api/sensors/${this.searchSensorId.trim()}/history`;
 
+    this.http.get<{ sensor_id: string; total_tests_found: number; history: SensorHistoryItem[] }>(sensorUrl).subscribe({
+      next: (response) => {
+        this.sensorHistory = response.history;
+        this.searchedSensorTitle = response.sensor_id;
+        if (this.sensorHistory.length === 0) {
+          this.searchErrorMessage = `No historical records discovered for "${this.searchSensorId}" in the database.`;
+        }
+      },
+      error: (err) => {
+        console.error('Search query failure:', err);
+        this.searchErrorMessage = 'Network communication failure or non-existent hardware identifier.';
+        this.sensorHistory = null;
+      }
+    });
+  }
+
+  /**
+   * Utility helper to extract string object key arrays for iteration templates.
+   */
   getTaskKeys(): string[] {
     return Object.keys(this.tasks);
   }

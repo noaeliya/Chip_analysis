@@ -8,7 +8,7 @@ from multiprocessing import Process
 
 DB_NAME = "chips_telemetry.db"
 
-# Serve Angular from static folder
+# Create Flask application instance and configure static folder to serve Angular builds
 app = Flask(__name__, 
             static_url_path='',
             static_folder='static', 
@@ -16,15 +16,16 @@ app = Flask(__name__,
 
 CORS(app)
 
+# Establishes a database connection with specific settings for multi-process concurrency
 def get_db_connection():
-    # Safe multi-process SQLite connection
     return sqlite3.connect(DB_NAME, check_same_thread=False, timeout=30)
 
+# Initializes database tables and structures, then wipes existing data for a clean startup
 def init_db():
-    # Setup tables and clear data on startup
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    # Creates the tasks tracking table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tasks (
             task_id TEXT PRIMARY KEY,
@@ -35,6 +36,7 @@ def init_db():
         )
     ''')
     
+    # Creates the raw telemetry sensors log table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chip_sensors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,6 +46,7 @@ def init_db():
         )
     ''')
     
+    # Creates the final compiled analytics results table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chip_analytics_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,8 +58,10 @@ def init_db():
         )
     ''')
     
+    # Creates an index on sensor_id to speed up search history queries
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_sensor_id ON chip_analytics_results(sensor_id)")
     
+    # Clears all previous records from the tables
     cursor.execute("DELETE FROM tasks")
     cursor.execute("DELETE FROM chip_sensors")
     cursor.execute("DELETE FROM chip_analytics_results")
@@ -65,13 +70,14 @@ def init_db():
     conn.close()
     print("--- [DATABASE] Initialized clean ---")
 
+# Asynchronous worker function running inside an isolated process to handle heavy calculations
 def heavy_task_worker(task_id):
-    # Background analytics worker process
     random.seed() 
     conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
+        # Step 1: Update task state and begin generating random hardware sensor readings
         cursor.execute("UPDATE tasks SET status = 'Generating raw data...', progress = 10 WHERE task_id = ?", (task_id,))
         conn.commit()
         
@@ -81,6 +87,7 @@ def heavy_task_worker(task_id):
         hot_chips = [f"CHIP_A_SENSOR_{i}" for i in range(1, 11)]
         sensors_data = []
         
+        # Loop to generate 1000 simulated telemetry points across 100 sensors
         for i in range(1000):
             chosen_id = random.randint(1, 100)
             sensor_id = f"CHIP_A_SENSOR_{chosen_id}"
@@ -97,12 +104,14 @@ def heavy_task_worker(task_id):
         cursor.executemany("INSERT INTO chip_sensors (sensor_id, temperature, voltage) VALUES (?, ?, ?)", sensors_data)
         conn.commit()
         
+        # Step 2: Fetch the newly generated raw data back for analytical grouping
         cursor.execute("UPDATE tasks SET status = 'Fetching data...', progress = 30 WHERE task_id = ?", (task_id,))
         conn.commit()
         
         cursor.execute("SELECT sensor_id, temperature FROM chip_sensors")
         rows = cursor.fetchall() 
         
+        # Step 3: Run the aggregation algorithm to find averages and thermal overshoots
         cursor.execute("UPDATE tasks SET status = 'Analyzing anomalies...', progress = 60 WHERE task_id = ?", (task_id,))
         conn.commit()
         
@@ -126,6 +135,7 @@ def heavy_task_worker(task_id):
         cursor.executemany("INSERT INTO chip_analytics_results (task_id, sensor_id, avg_temperature, anomalies_count) VALUES (?, ?, ?, ?)", analytics_rows)
         conn.commit()
         
+        # Step 4: Finalize the task structure and update completion status to 100%
         final_summary = f"Analysis complete for {len(chip_groups)} chips."
         cursor.execute("UPDATE tasks SET status = 'Completed', progress = 100, result = ? WHERE task_id = ?", (final_summary, task_id))
         conn.commit()
@@ -141,6 +151,7 @@ def heavy_task_worker(task_id):
 
 # === Endpoints ===
 
+# POST API Endpoint: Clears all system tables and states manually upon request
 @app.route('/api/reset', methods=['POST'])
 def reset_database():
     conn = get_db_connection()
@@ -156,6 +167,7 @@ def reset_database():
     finally:
         conn.close()
 
+# POST API Endpoint: Registers a new task tracking id and immediate forks a background worker process
 @app.route('/api/tasks', methods=['POST'])
 def create_task():
     task_id = f"task_{int(time.time())}"
@@ -169,6 +181,7 @@ def create_task():
     p.start()
     return jsonify({"task_id": task_id, "status": "Started"}), 201
 
+# GET API Endpoint: Retrieves all existing tasks and progress metrics for the front-end dashboard monitor
 @app.route('/api/tasks', methods=['GET'])
 def get_tasks():
     conn = get_db_connection()
@@ -187,6 +200,7 @@ def get_tasks():
         }
     return jsonify(tasks_dict), 200
 
+# GET API Endpoint: Fetches computed thermal anomalies and results for a specific task index
 @app.route('/api/tasks/<task_id>/analytics', methods=['GET'])
 def get_task_analytics(task_id):
     conn = get_db_connection()
@@ -206,6 +220,7 @@ def get_task_analytics(task_id):
     results = [{"sensor_id": row['sensor_id'], "avg_temperature": row['avg_temperature'], "anomalies_count": row['anomalies_count']} for row in rows]
     return jsonify(results), 200
 
+# GET API Endpoint: Extracts the latest historical run profiles for a single queried chip id
 @app.route('/api/sensors/<sensor_name>/history', methods=['GET'])
 def get_sensor_history(sensor_name):
     conn = get_db_connection()
@@ -239,15 +254,16 @@ def get_sensor_history(sensor_name):
         "history": history
     }), 200
 
+# Catch-All UI Routing Endpoint: Redirects all non-API web traffic to Angular index.html to protect deep links
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')
 def catch_all(path):
-    # Route non-API requests to Angular index.html
     if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
         return send_from_directory(app.static_folder, path)
     else:
         return send_from_directory(app.static_folder, 'index.html')
 
+# Core application entry point: Triggers initialization and fires up the WSGI server
 if __name__ == '__main__':
     init_db() 
     app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
