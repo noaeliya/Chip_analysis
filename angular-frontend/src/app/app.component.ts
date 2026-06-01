@@ -199,8 +199,10 @@ export class AppComponent implements OnInit {
   tasks: { [key: string]: Task } = {};
   taskAnalytics: { [key: string]: ChipResult[] } = {};
   
-  private apiUrl = 'http://127.0.0.1:5000/api/tasks';
-  
+// הכתובת הציבורית היא כעת ה-DNS של ה-Load Balancer שלך!
+private baseServerUrl = 'http://task-1855629512.eu-west-1.elb.amazonaws.com';
+private apiUrl = `${this.baseServerUrl}/api/tasks`;
+
   searchSensorId: string = '';
   searchedSensorTitle: string = '';
   sensorHistory: SensorHistoryItem[] | null = null;
@@ -208,19 +210,19 @@ export class AppComponent implements OnInit {
 
   constructor(private http: HttpClient) {}
 
-  // 🔥 השינוי המרכזי כאן: הפונקציה קודם מאפסת את ה-DB בשרת ורק אז מושכת את הנתונים
-  ngOnInit() {
-    this.http.post('http://127.0.0.1:5000/api/reset', {}).subscribe({
-      next: () => {
-        console.log('--- [DATABASE] מסד הנתונים אופס בהצלחה בעקבות טעינת הדף ---');
-        this.fetchTasksImmediate();
-      },
-      error: (err) => {
-        console.error('שגיאה באיפוס מסד הנתונים, מנסה לטעון נתונים קיימים:', err);
-        this.fetchTasksImmediate();
-      }
-    });
-  }
+ngOnInit() {
+  // תיקון: פנייה לשרת בענן ולא ל-127.0.0.1 המקומי
+  this.http.post(`${this.baseServerUrl}/api/reset`, {}).subscribe({
+    next: () => {
+      console.log('--- [DATABASE] מסד הנתונים אופס בהצלחה בעקבות טעינת הדף ---');
+      this.fetchTasksImmediate();
+    },
+    error: (err) => {
+      console.error('שגיאה באיפוס מסד הנתונים, מנסה לטעון נתונים קיימים:', err);
+      this.fetchTasksImmediate();
+    }
+  });
+}
 
   createNewTask() {
     this.http.post(this.apiUrl, {}).subscribe({
@@ -280,30 +282,30 @@ export class AppComponent implements OnInit {
     });
   }
 
-  searchSensorHistory() {
-    if (!this.searchSensorId.trim()) {
-      this.searchErrorMessage = 'אנא הזיני מזהה שבב לחיפוש.';
-      this.sensorHistory = null;
-      return;
-    }
-    this.searchErrorMessage = '';
-    const sensorUrl = `http://127.0.0.1:5000/api/sensors/${this.searchSensorId.trim()}/history`;
-
-    this.http.get<{ sensor_id: string; total_tests_found: number; history: SensorHistoryItem[] }>(sensorUrl).subscribe({
-      next: (response) => {
-        this.sensorHistory = response.history;
-        this.searchedSensorTitle = response.sensor_id;
-        if (this.sensorHistory.length === 0) {
-          this.searchErrorMessage = `לא נמצאו רשומות עבור "${this.searchSensorId}" במסד הנתונים.`;
-        }
-      },
-      error: (err) => {
-        console.error(err);
-        this.searchErrorMessage = 'שגיאה בתקשורת עם השרת או שהשבב לא קיים.';
-        this.sensorHistory = null;
-      }
-    });
+searchSensorHistory() {
+  if (!this.searchSensorId.trim()) {
+    this.searchErrorMessage = 'אנא הזיני מזהה שבב לחיפוש.';
+    this.sensorHistory = null;
+    return;
   }
+  this.searchErrorMessage = '';
+  const sensorUrl = `${this.baseServerUrl}/api/sensors/${this.searchSensorId.trim()}/history`;
+
+  this.http.get<{ sensor_id: string; total_tests_found: number; history: SensorHistoryItem[] }>(sensorUrl).subscribe({
+    next: (response) => {
+      this.sensorHistory = response.history;
+      this.searchedSensorTitle = response.sensor_id;
+      if (this.sensorHistory.length === 0) {
+        this.searchErrorMessage = `לא נמצאו רשומות עבור "${this.searchSensorId}" במסד הנתונים.`;
+      }
+    },
+    error: (err) => {
+      console.error(err);
+      this.searchErrorMessage = 'שגיאה בתקשורת עם השרת או שהשבב לא קיים.';
+      this.sensorHistory = null;
+    }
+  });
+}
 
   getTaskKeys(): string[] {
     return Object.keys(this.tasks);

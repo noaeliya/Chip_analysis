@@ -1,21 +1,30 @@
 import sqlite3
 import time
 import random
-from flask import Flask, jsonify
+import os
+from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from multiprocessing import Process
 
-app = Flask(__name__)
-CORS(app)
-
 DB_NAME = "chips_telemetry.db"
 
+# Serve Angular from static folder
+app = Flask(__name__, 
+            static_url_path='',
+            static_folder='static', 
+            template_folder='static')
+
+CORS(app)
+
+def get_db_connection():
+    # Safe multi-process SQLite connection
+    return sqlite3.connect(DB_NAME, check_same_thread=False, timeout=30)
+
 def init_db():
-    """יצירת הטבלאות ואתחול המבנה הראשוני - מנקה היסטוריה בכל עליית שרת"""
-    conn = sqlite3.connect(DB_NAME)
+    # Setup tables and clear data on startup
+    conn = get_db_connection()
     cursor = conn.cursor()
     
-    # 1. טבלת משימות העיבוד
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS tasks (
             task_id TEXT PRIMARY KEY,
@@ -26,7 +35,6 @@ def init_db():
         )
     ''')
     
-    # 2. טבלת רשומות הטלמטריה
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chip_sensors (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,7 +44,6 @@ def init_db():
         )
     ''')
     
-    # 3. תוצאות אנליזה מפורטות לפי שבב
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chip_analytics_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,56 +57,34 @@ def init_db():
     
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_sensor_id ON chip_analytics_results(sensor_id)")
     
-    # ניקוי כל הנתונים הישנים מה-Database כשהשרת נדלק
     cursor.execute("DELETE FROM tasks")
     cursor.execute("DELETE FROM chip_sensors")
     cursor.execute("DELETE FROM chip_analytics_results")
     
     conn.commit()
     conn.close()
-    print("--- [DATABASE] מסד הנתונים אופס ונפתח נקי לחלוטין! ---")
-
-# 🔥 החלק החדש: נתיב ייעודי המאפשר לאנגולר לאפס את מסד הנתונים בכל רענון דף
-@app.route('/api/reset', methods=['POST'])
-def reset_database():
-    """נתיב המאפשר ל-Frontend לבקש איפוס מלא של מסד הנתונים בזמן אמת"""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    try:
-        cursor.execute("DELETE FROM tasks")
-        cursor.execute("DELETE FROM chip_sensors")
-        cursor.execute("DELETE FROM chip_analytics_results")
-        conn.commit()
-        print("--- [DATABASE] מסד הנתונים אופס לבקשת ה-Frontend ---")
-        return jsonify({"status": "Database cleared successfully"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
+    print("--- [DATABASE] Initialized clean ---")
 
 def heavy_task_worker(task_id):
-    """תהליך Worker מבודד שמייצר נתונים אקראיים, שומר ב-DB ומנתח אותם לפי שבב"""
+    # Background analytics worker process
     random.seed() 
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        # שלב 1: סימולציית ייצור נתוני חומרה טריים
-        cursor.execute("UPDATE tasks SET status = 'מייצר נתוני חיישנים גולמיים ב-DB...', progress = 10 WHERE task_id = ?", (task_id,))
+        cursor.execute("UPDATE tasks SET status = 'Generating raw data...', progress = 10 WHERE task_id = ?", (task_id,))
         conn.commit()
         
         cursor.execute("DELETE FROM chip_sensors")
+        conn.commit()
         
-        # נגדיר מראש 10 מזהי שבבים שהולכים להיות ה"לוהטים" של הריצה הזו
         hot_chips = [f"CHIP_A_SENSOR_{i}" for i in range(1, 11)]
-        
         sensors_data = []
-        for i in range(500000):
-            # הגרלת שבב מתוך 100 שבבים אפשריים
+        
+        for i in range(1000):
             chosen_id = random.randint(1, 100)
             sensor_id = f"CHIP_A_SENSOR_{chosen_id}"
             
-            # הלוגיקה החדשה: אם זה אחד מ-10 השבבים הראשונים, נדחוף לו חום קיצוני וחריגות!
             if sensor_id in hot_chips:
                 temperature = random.uniform(96.0, 115.0) 
                 voltage = random.uniform(1.1, 1.3)        
@@ -112,15 +97,13 @@ def heavy_task_worker(task_id):
         cursor.executemany("INSERT INTO chip_sensors (sensor_id, temperature, voltage) VALUES (?, ?, ?)", sensors_data)
         conn.commit()
         
-        # שלב 2: שליפת הנתונים מהמאגר לצורך האנליזה
-        cursor.execute("UPDATE tasks SET status = 'שולף נתוני חומרה מה-DB...', progress = 30 WHERE task_id = ?", (task_id,))
+        cursor.execute("UPDATE tasks SET status = 'Fetching data...', progress = 30 WHERE task_id = ?", (task_id,))
         conn.commit()
         
         cursor.execute("SELECT sensor_id, temperature FROM chip_sensors")
         rows = cursor.fetchall() 
         
-        # שלב 3: אנליזה מתקדמת - פיצול הנתונים לפי שבב
-        cursor.execute("UPDATE tasks SET status = 'מנתח חריגות חום לפי שבב...', progress = 60 WHERE task_id = ?", (task_id,))
+        cursor.execute("UPDATE tasks SET status = 'Analyzing anomalies...', progress = 60 WHERE task_id = ?", (task_id,))
         conn.commit()
         
         chip_groups = {}
@@ -134,33 +117,49 @@ def heavy_task_worker(task_id):
             if temp > 95.0:
                 chip_groups[s_id]['anomalies'] += 1
         
-        # שלב 4: שמירת התוצאות המפורטות לטבלה החדשה
         analytics_rows = []
         for s_id, metrics in chip_groups.items():
             avg_temp = round(metrics['temps_sum'] / metrics['count'], 2)
             anomalies = metrics['anomalies']
             analytics_rows.append((task_id, s_id, avg_temp, anomalies))
             
-        cursor.executemany(
-            "INSERT INTO chip_analytics_results (task_id, sensor_id, avg_temperature, anomalies_count) VALUES (?, ?, ?, ?)", 
-            analytics_rows
-        )
+        cursor.executemany("INSERT INTO chip_analytics_results (task_id, sensor_id, avg_temperature, anomalies_count) VALUES (?, ?, ?, ?)", analytics_rows)
         conn.commit()
         
-        final_summary = f"האנליזה הושלמה! חושבו תוצאות עבור {len(chip_groups)} שבבים נפרדים."
+        final_summary = f"Analysis complete for {len(chip_groups)} chips."
         cursor.execute("UPDATE tasks SET status = 'Completed', progress = 100, result = ? WHERE task_id = ?", (final_summary, task_id))
         conn.commit()
         
     except Exception as e:
-        cursor.execute("UPDATE tasks SET status = ?, progress = 0 WHERE task_id = ?", (f"Error: {str(e)}", task_id))
+        try:
+            cursor.execute("UPDATE tasks SET status = ?, progress = 0 WHERE task_id = ?", (f"Error: {str(e)}", task_id))
+            conn.commit()
+        except:
+            pass
+    finally:
+        conn.close()
+
+# === Endpoints ===
+
+@app.route('/api/reset', methods=['POST'])
+def reset_database():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM tasks")
+        cursor.execute("DELETE FROM chip_sensors")
+        cursor.execute("DELETE FROM chip_analytics_results")
         conn.commit()
+        return jsonify({"status": "Database cleared successfully"}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
 @app.route('/api/tasks', methods=['POST'])
 def create_task():
     task_id = f"task_{int(time.time())}"
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("INSERT INTO tasks (task_id, status, progress, result, created_at) VALUES (?, 'Started', 0, NULL, ?)", (task_id, time.time()))
     conn.commit()
@@ -172,7 +171,7 @@ def create_task():
 
 @app.route('/api/tasks', methods=['GET'])
 def get_tasks():
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row  
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM tasks ORDER BY created_at DESC")
@@ -190,7 +189,7 @@ def get_tasks():
 
 @app.route('/api/tasks/<task_id>/analytics', methods=['GET'])
 def get_task_analytics(task_id):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
@@ -209,7 +208,7 @@ def get_task_analytics(task_id):
 
 @app.route('/api/sensors/<sensor_name>/history', methods=['GET'])
 def get_sensor_history(sensor_name):
-    conn = sqlite3.connect(DB_NAME)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     
@@ -240,8 +239,15 @@ def get_sensor_history(sensor_name):
         "history": history
     }), 200
 
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def catch_all(path):
+    # Route non-API requests to Angular index.html
+    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
+    else:
+        return send_from_directory(app.static_folder, 'index.html')
+
 if __name__ == '__main__':
     init_db() 
-    print("--- שרת הטלמטריה רץ ומחובר ל-SQLite בפורט 5000 ---")
-    #  שינוי: הוספת host='0.0.0.0' כדי לאפשר גישה מחוץ לקונטיינר, והפעלת ה-debug
     app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)

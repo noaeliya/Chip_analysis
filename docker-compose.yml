@@ -1,20 +1,31 @@
-version: '3.8'
+# === שלב 1: בניית הפרונטאנד (Angular) באמצעות Node.js ===
+FROM node:20-alpine AS frontend-build
+WORKDIR /frontend
 
-services:
-  # שירות ה-Backend (Flask API)
-  backend:
-    build: ./backend  # נתיב לתיקיית ה-Backend שבה נמצא ה-Dockerfile של פייתון
-    ports:
-      - "5000:5000"   # מיפוי פורט 5000 מהמחשב שלך לפורט 5000 בקונטיינר
-    volumes:
-      - ./backend:/app  # מאפשר שמירת קובץ ה-db על המחשב המקומי כדי שהנתונים לא יימחקו סתם
-    restart: always
+# העתקת קבצי הגדרות התלויות של אנגולר והתקנתן
+COPY angular-frontend/package*.json ./
+RUN npm install
 
-  # שירות ה-Frontend (Angular Client)
-  frontend:
-    build: ./angular-frontend # נתיב לתיקיית ה-Frontend שבה נמצא ה-Dockerfile של אנגולר
-    ports:
-      - "4200:80"     # ממפה את פורט 4200 בדפדפן שלך לפורט 80 של שרת ה-Nginx בקונטיינר
-    restart: always
-    depends_on:
-      - backend       # מבטיח שה-Backend יעלה וירוץ לפני שאנגולר מנסה לעלות
+# העתקת כל קוד המקור של אנגולר ובניית גרסת Production
+COPY angular-frontend/ .
+RUN npm run build -- --configuration=production
+
+# === שלב 2: בניית הבקאנד המאוחד והרצתו (Python) ===
+FROM python:3.11-slim
+WORKDIR /app
+
+# התקנת הספריות של פלאסק ישירות בתוך הקונטיינר
+RUN pip install --no-cache-dir flask flask-cors
+
+# העתקת כל קבצי הקוד של תיקיית הבקאנד
+COPY backend/ .
+
+# 🔥 קסם ההעתקה: לוקחים את הקבצים המוכנים שאנגולר בנה בשלב 1,
+# ומעתיקים אותם ישירות לתוך תיקיית 'static' שפלאסק קורא ממנה!
+COPY --from=frontend-build /frontend/dist/angular-frontend/ /app/static/
+
+# חשיפת פורט 5000 כלפי חוץ (הפורט הראשי של פלאסק)
+EXPOSE 5000
+
+# פקודת ההרצה של השרת האחוד
+CMD ["python", "app.py"]
