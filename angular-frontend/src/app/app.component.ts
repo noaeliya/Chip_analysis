@@ -90,7 +90,6 @@ interface SensorHistoryItem {
 
       <div class="actions-row">
         <button class="btn-primary" (click)="createNewTask()">➕ הפעל משימת עיבוד חדשה ברקע</button>
-        <button class="btn-secondary" (click)="fetchTasksImmediate()">🔄 רענן סטטוס משימות</button>
       </div>
 
       <div class="tasks-container">
@@ -160,10 +159,8 @@ interface SensorHistoryItem {
     .section-desc { color: #7f8c8d; font-size: 14px; margin-bottom: 20px; }
     
     .actions-row { display: flex; gap: 15px; margin-bottom: 30px; }
-    .btn-primary { background-color: #3498db; color: white; border: none; padding: 14px 28px; font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer; flex: 2; transition: background 0.2s; }
+    .btn-primary { background-color: #3498db; color: white; border: none; padding: 14px 28px; font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer; flex: 1; text-align: center; transition: background 0.2s; }
     .btn-primary:hover { background-color: #2980b9; }
-    .btn-secondary { background-color: #95a5a6; color: white; border: none; padding: 14px 24px; font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer; flex: 1; transition: background 0.2s; }
-    .btn-secondary:hover { background-color: #7f8c8d; }
     
     .tasks-container { margin-top: 20px; }
     .no-tasks { background: #f8f9fa; padding: 25px; border-radius: 8px; text-align: center; color: #95a5a6; border: 1px dashed #bdc3c7; }
@@ -280,7 +277,7 @@ export class AppComponent implements OnInit {
   }
 
   /**
-   * Immediate singular fetch to sync client interface state with backend data store.
+   * Immediate synchronization to pull database changes into component state map.
    */
   fetchTasksImmediate() {
     this.http.get<{ [key: string]: Task }>(this.apiUrl).subscribe({
